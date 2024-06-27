@@ -1,249 +1,74 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-import altair as alt
+from flask import Flask, render_template, request, jsonify
+from notifypy import Notify
+import threading
 import time
-import zipfile
+import os
 
-# Page title
-st.set_page_config(page_title='ML model builder', page_icon='🏗️')
-st.title('🏗️ ML model builder')
+app = Flask(__name__)
 
-with st.expander('About this app'):
-  st.markdown('**What can this app do?**')
-  st.info('This app allow users to build a machine learning (ML) model in an end-to-end workflow. Particularly, this encompasses data upload, data pre-processing, ML model building and post-model analysis.')
+# Initial values
+drinked_water = 0
+target_intake = 3200  # Default target intake
+send_notifications = False  # Flag to control notification sending
 
-  st.markdown('**How to use the app?**')
-  st.warning('To engage with the app, go to the sidebar and 1. Select a data set and 2. Adjust the model parameters by adjusting the various slider widgets. As a result, this would initiate the ML model building process, display the model results as well as allowing users to download the generated models and accompanying data.')
+# Create a Notify object
+notification = Notify()
 
-  st.markdown('**Under the hood**')
-  st.markdown('Data sets:')
-  st.code('''- Drug solubility data set
-  ''', language='markdown')
-  
-  st.markdown('Libraries used:')
-  st.code('''- Pandas for data wrangling
-- Scikit-learn for building a machine learning model
-- Altair for chart creation
-- Streamlit for user interface
-  ''', language='markdown')
+@app.route('/')
+def index():
+    return render_template('index.html', drinked_water=drinked_water, target_intake=target_intake)
 
-
-# Sidebar for accepting input parameters
-with st.sidebar:
-    # Load data
-    st.header('1.1. Input data')
-
-    st.markdown('**1. Use custom data**')
-    uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file, index_col=False)
-      
-    # Download example data
-    @st.cache_data
-    def convert_df(input_df):
-        return input_df.to_csv(index=False).encode('utf-8')
-    example_csv = pd.read_csv('https://raw.githubusercontent.com/dataprofessor/data/master/delaney_solubility_with_descriptors.csv')
-    csv = convert_df(example_csv)
-    st.download_button(
-        label="Download example CSV",
-        data=csv,
-        file_name='delaney_solubility_with_descriptors.csv',
-        mime='text/csv',
-    )
-
-    # Select example data
-    st.markdown('**1.2. Use example data**')
-    example_data = st.toggle('Load example data')
-    if example_data:
-        df = pd.read_csv('https://raw.githubusercontent.com/dataprofessor/data/master/delaney_solubility_with_descriptors.csv')
-
-    st.header('2. Set Parameters')
-    parameter_split_size = st.slider('Data split ratio (% for Training Set)', 10, 90, 80, 5)
-
-    st.subheader('2.1. Learning Parameters')
-    with st.expander('See parameters'):
-        parameter_n_estimators = st.slider('Number of estimators (n_estimators)', 0, 1000, 100, 100)
-        parameter_max_features = st.select_slider('Max features (max_features)', options=['all', 'sqrt', 'log2'])
-        parameter_min_samples_split = st.slider('Minimum number of samples required to split an internal node (min_samples_split)', 2, 10, 2, 1)
-        parameter_min_samples_leaf = st.slider('Minimum number of samples required to be at a leaf node (min_samples_leaf)', 1, 10, 2, 1)
-
-    st.subheader('2.2. General Parameters')
-    with st.expander('See parameters', expanded=False):
-        parameter_random_state = st.slider('Seed number (random_state)', 0, 1000, 42, 1)
-        parameter_criterion = st.select_slider('Performance measure (criterion)', options=['squared_error', 'absolute_error', 'friedman_mse'])
-        parameter_bootstrap = st.select_slider('Bootstrap samples when building trees (bootstrap)', options=[True, False])
-        parameter_oob_score = st.select_slider('Whether to use out-of-bag samples to estimate the R^2 on unseen data (oob_score)', options=[False, True])
-
-    sleep_time = st.slider('Sleep time', 0, 3, 0)
-
-# Initiate the model building process
-if uploaded_file or example_data: 
-    with st.status("Running ...", expanded=True) as status:
+@app.route('/update_intake', methods=['POST'])
+def update_intake():
+    global drinked_water, target_intake, send_notifications
+    intake = int(request.json['intake'])
+    drinked_water += intake
     
-        st.write("Loading data ...")
-        time.sleep(sleep_time)
-
-        st.write("Preparing data ...")
-        time.sleep(sleep_time)
-        X = df.iloc[:,:-1]
-        y = df.iloc[:,-1]
-            
-        st.write("Splitting data ...")
-        time.sleep(sleep_time)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=(100-parameter_split_size)/100, random_state=parameter_random_state)
+    # Check if target intake is reached
+    if drinked_water >= target_intake:
+        send_notifications = False  # Stop notifications
     
-        st.write("Model training ...")
-        time.sleep(sleep_time)
+    return jsonify({'status': 'success', 'water_intake': drinked_water, 'target_intake': target_intake})
 
-        if parameter_max_features == 'all':
-            parameter_max_features = None
-            parameter_max_features_metric = X.shape[1]
+@app.route('/update_target', methods=['POST'])
+def update_target():
+    global target_intake
+    target_intake = int(request.json['target_intake'])
+    return jsonify({'status': 'success', 'target_intake': target_intake})
+
+def send_reminder_notifications(name, interval):
+    global send_notifications
+    while send_notifications:
+        # Send notification
+        notification.title = 'Water Reminder'
+        notification.message = f"Hey, don't forget to drink water!"
+        icon_path = os.path.join( r"data:image/jpeg;base64,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")
         
-        rf = RandomForestRegressor(
-                n_estimators=parameter_n_estimators,
-                max_features=parameter_max_features,
-                min_samples_split=parameter_min_samples_split,
-                min_samples_leaf=parameter_min_samples_leaf,
-                random_state=parameter_random_state,
-                criterion=parameter_criterion,
-                bootstrap=parameter_bootstrap,
-                oob_score=parameter_oob_score)
-        rf.fit(X_train, y_train)
+        if os.path.exists(icon_path):
+            notification.icon = icon_path
+        else:
+            print(f"Icon file {icon_path} does not exist")
+            notification.icon = None  # Or set a default icon
         
-        st.write("Applying model to make predictions ...")
-        time.sleep(sleep_time)
-        y_train_pred = rf.predict(X_train)
-        y_test_pred = rf.predict(X_test)
-            
-        st.write("Evaluating performance metrics ...")
-        time.sleep(sleep_time)
-        train_mse = mean_squared_error(y_train, y_train_pred)
-        train_r2 = r2_score(y_train, y_train_pred)
-        test_mse = mean_squared_error(y_test, y_test_pred)
-        test_r2 = r2_score(y_test, y_test_pred)
-        
-        st.write("Displaying performance metrics ...")
-        time.sleep(sleep_time)
-        parameter_criterion_string = ' '.join([x.capitalize() for x in parameter_criterion.split('_')])
-        #if 'Mse' in parameter_criterion_string:
-        #    parameter_criterion_string = parameter_criterion_string.replace('Mse', 'MSE')
-        rf_results = pd.DataFrame(['Random forest', train_mse, train_r2, test_mse, test_r2]).transpose()
-        rf_results.columns = ['Method', f'Training {parameter_criterion_string}', 'Training R2', f'Test {parameter_criterion_string}', 'Test R2']
-        # Convert objects to numerics
-        for col in rf_results.columns:
-            rf_results[col] = pd.to_numeric(rf_results[col], errors='ignore')
-        # Round to 3 digits
-        rf_results = rf_results.round(3)
-        
-    status.update(label="Status", state="complete", expanded=False)
+    
+        print(f"Notification sent with icon: {icon_path}")
 
-    # Display data info
-    st.header('Input data', divider='rainbow')
-    col = st.columns(4)
-    col[0].metric(label="No. of samples", value=X.shape[0], delta="")
-    col[1].metric(label="No. of X variables", value=X.shape[1], delta="")
-    col[2].metric(label="No. of Training samples", value=X_train.shape[0], delta="")
-    col[3].metric(label="No. of Test samples", value=X_test.shape[0], delta="")
-    
-    with st.expander('Initial dataset', expanded=True):
-        st.dataframe(df, height=210, use_container_width=True)
-    with st.expander('Train split', expanded=False):
-        train_col = st.columns((3,1))
-        with train_col[0]:
-            st.markdown('**X**')
-            st.dataframe(X_train, height=210, hide_index=True, use_container_width=True)
-        with train_col[1]:
-            st.markdown('**y**')
-            st.dataframe(y_train, height=210, hide_index=True, use_container_width=True)
-    with st.expander('Test split', expanded=False):
-        test_col = st.columns((3,1))
-        with test_col[0]:
-            st.markdown('**X**')
-            st.dataframe(X_test, height=210, hide_index=True, use_container_width=True)
-        with test_col[1]:
-            st.markdown('**y**')
-            st.dataframe(y_test, height=210, hide_index=True, use_container_width=True)
+        # Wait for the given interval (converted from minutes to seconds)
+        time.sleep(interval * 60)
+        notification.send()
 
-    # Zip dataset files
-    df.to_csv('dataset.csv', index=False)
-    X_train.to_csv('X_train.csv', index=False)
-    y_train.to_csv('y_train.csv', index=False)
-    X_test.to_csv('X_test.csv', index=False)
-    y_test.to_csv('y_test.csv', index=False)
-    
-    list_files = ['dataset.csv', 'X_train.csv', 'y_train.csv', 'X_test.csv', 'y_test.csv']
-    with zipfile.ZipFile('dataset.zip', 'w') as zipF:
-        for file in list_files:
-            zipF.write(file, compress_type=zipfile.ZIP_DEFLATED)
+@app.route('/set_reminder', methods=['POST'])
+def set_reminder():
+    global send_notifications
+    send_notifications = True
+    name = 'praisy'
+    interval = 1  # Interval in minutes
 
-    with open('dataset.zip', 'rb') as datazip:
-        btn = st.download_button(
-                label='Download ZIP',
-                data=datazip,
-                file_name="dataset.zip",
-                mime="application/octet-stream"
-                )
-    
-    # Display model parameters
-    st.header('Model parameters', divider='rainbow')
-    parameters_col = st.columns(3)
-    parameters_col[0].metric(label="Data split ratio (% for Training Set)", value=parameter_split_size, delta="")
-    parameters_col[1].metric(label="Number of estimators (n_estimators)", value=parameter_n_estimators, delta="")
-    parameters_col[2].metric(label="Max features (max_features)", value=parameter_max_features_metric, delta="")
-    
-    # Display feature importance plot
-    importances = rf.feature_importances_
-    feature_names = list(X.columns)
-    forest_importances = pd.Series(importances, index=feature_names)
-    df_importance = forest_importances.reset_index().rename(columns={'index': 'feature', 0: 'value'})
-    
-    bars = alt.Chart(df_importance).mark_bar(size=40).encode(
-             x='value:Q',
-             y=alt.Y('feature:N', sort='-x')
-           ).properties(height=250)
+    # Start the reminder notifications in a separate thread
+    reminder_thread = threading.Thread(target=send_reminder_notifications, args=(name, interval))
+    reminder_thread.start()
 
-    performance_col = st.columns((2, 0.2, 3))
-    with performance_col[0]:
-        st.header('Model performance', divider='rainbow')
-        st.dataframe(rf_results.T.reset_index().rename(columns={'index': 'Parameter', 0: 'Value'}))
-    with performance_col[2]:
-        st.header('Feature importance', divider='rainbow')
-        st.altair_chart(bars, theme='streamlit', use_container_width=True)
+    return jsonify({'status': 'success'})
 
-    # Prediction results
-    st.header('Prediction results', divider='rainbow')
-    s_y_train = pd.Series(y_train, name='actual').reset_index(drop=True)
-    s_y_train_pred = pd.Series(y_train_pred, name='predicted').reset_index(drop=True)
-    df_train = pd.DataFrame(data=[s_y_train, s_y_train_pred], index=None).T
-    df_train['class'] = 'train'
-        
-    s_y_test = pd.Series(y_test, name='actual').reset_index(drop=True)
-    s_y_test_pred = pd.Series(y_test_pred, name='predicted').reset_index(drop=True)
-    df_test = pd.DataFrame(data=[s_y_test, s_y_test_pred], index=None).T
-    df_test['class'] = 'test'
-    
-    df_prediction = pd.concat([df_train, df_test], axis=0)
-    
-    prediction_col = st.columns((2, 0.2, 3))
-    
-    # Display dataframe
-    with prediction_col[0]:
-        st.dataframe(df_prediction, height=320, use_container_width=True)
-
-    # Display scatter plot of actual vs predicted values
-    with prediction_col[2]:
-        scatter = alt.Chart(df_prediction).mark_circle(size=60).encode(
-                        x='actual',
-                        y='predicted',
-                        color='class'
-                  )
-        st.altair_chart(scatter, theme='streamlit', use_container_width=True)
-
-    
-# Ask for CSV upload if none is detected
-else:
-    st.warning('👈 Upload a CSV file or click *"Load example data"* to get started!')
+if __name__ == '__main__':
+    app.run()
